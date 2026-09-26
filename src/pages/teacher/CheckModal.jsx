@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { useAuth } from '../../store/useAuth';
 import { useUI } from '../../store/useUI';
 import { useHomework } from '../../store/useHomework';
-import { studentById } from '../../data/mock';
+import { useUsers } from '../../store/useUsers';
 import { fmtRelative } from '../../lib/time';
+import { downloadFile } from '../../lib/upload';
 
 import Avatar from '../../ui/Avatar';
 import Button from '../../ui/Button';
@@ -14,8 +14,8 @@ import Modal from '../../ui/Modal';
 export default function CheckModal({ id, onClose }) {
   const update = useHomework((s) => s.update);
   const items = useHomework((s) => s.items);
+  const users = useUsers((s) => s.users);
   const toast = useUI((s) => s.toast);
-  const user = useAuth((s) => s.user);
 
   const hw = items.find((h) => h.id === id);
 
@@ -25,10 +25,10 @@ export default function CheckModal({ id, onClose }) {
 
   if (!hw) return null;
 
-  const student = studentById(hw.studentIds[0]);
+  const student = users.find((u) => u.id === hw.student_ids?.[0]);
   if (!student) return null;
 
-  const save = () => {
+  const save = async () => {
     const g = Number(grade);
     if (!g || g < 1 || g > 5) {
       toast('warn', 'Некорректная оценка', 'Введите число от 1 до 5');
@@ -36,23 +36,25 @@ export default function CheckModal({ id, onClose }) {
     }
 
     setSaving(true);
-    setTimeout(() => {
-      update(hw.id, {
-        grade: g,
-        comment: comment.trim(),
-        status: 'graded',
-        gradedAt: Date.now(),
-      });
+    await update(hw.id, {
+      grade: g,
+      comment: comment.trim(),
+      status: 'graded',
+      graded_at: new Date().toISOString(),
+    });
 
-      setSaving(false);
-      toast(
-        'success',
-        'Оценка сохранена',
-        `${student.name}: ${g} — ${hw.title}`
-      );
-      onClose();
-    }, 500);
+    setSaving(false);
+    toast(
+      'success',
+      'Оценка сохранена',
+      `${student.name}: ${g} — ${hw.title}`
+    );
+    onClose();
   };
+
+  const submittedTs = hw.submitted_at
+    ? new Date(hw.submitted_at).getTime()
+    : null;
 
   return (
     <Modal
@@ -63,32 +65,33 @@ export default function CheckModal({ id, onClose }) {
       footer={
         <>
           <Button onClick={onClose}>Закрыть</Button>
-          <Button
-            variant="primary"
-            onClick={save}
-            disabled={saving}
-          >
+          <Button variant="primary" onClick={save} disabled={saving}>
             {saving ? 'Сохранение…' : 'Сохранить оценку'}
           </Button>
         </>
       }
     >
-      {/* ----- Ученик ----- */}
-      <div
-        className="row"
-        style={{ gap: 12, marginBottom: 16 }}
-      >
-        <Avatar short={student.short} color={student.color} size="l" />
+      <div className="row" style={{ gap: 12, marginBottom: 16 }}>
+        <Avatar
+          short={(student.name || '')
+            .split(' ')
+            .map((x) => x[0])
+            .slice(0, 2)
+            .join('')
+            .toUpperCase()}
+          color={student.color}
+          size="l"
+        />
         <div>
           <div style={{ fontWeight: 650, fontSize: 16 }}>
             {student.name}
           </div>
           <div className="small muted">
-            {student.group} · {student.email}
+            {student.group_name || '—'} · {student.email}
           </div>
-          {hw.submittedAt && (
+          {submittedTs && (
             <div className="small muted" style={{ marginTop: 4 }}>
-              Сдано {fmtRelative(hw.submittedAt)}
+              Сдано {fmtRelative(submittedTs)}
             </div>
           )}
         </div>
@@ -96,9 +99,11 @@ export default function CheckModal({ id, onClose }) {
 
       <div className="divider" />
 
-      {/* ----- Задание ----- */}
       <div style={{ marginBottom: 14 }}>
-        <div className="small muted" style={{ marginBottom: 4, fontWeight: 600 }}>
+        <div
+          className="small muted"
+          style={{ marginBottom: 4, fontWeight: 600 }}
+        >
           Задание
         </div>
         <div style={{ fontWeight: 600, fontSize: 15 }}>{hw.title}</div>
@@ -115,13 +120,15 @@ export default function CheckModal({ id, onClose }) {
             lineHeight: 1.6,
           }}
         >
-          {hw.desc}
+          {hw.description}
         </div>
       </div>
 
-      {/* ----- Ответ ученика ----- */}
       <div style={{ marginBottom: 14 }}>
-        <div className="small muted" style={{ marginBottom: 6, fontWeight: 600 }}>
+        <div
+          className="small muted"
+          style={{ marginBottom: 6, fontWeight: 600 }}
+        >
           Ответ ученика
         </div>
         {hw.answer ? (
@@ -136,12 +143,11 @@ export default function CheckModal({ id, onClose }) {
             {hw.answer}
           </div>
         ) : (
-          <div className="small muted">Ученик не оставил текстовый ответ</div>
+          <div className="small muted">Нет текстового ответа</div>
         )}
       </div>
 
-      {/* ----- Файлы ученика ----- */}
-      {hw.answerFiles?.length > 0 && (
+      {hw.answer_files?.length > 0 && (
         <div style={{ marginBottom: 14 }}>
           <div
             className="small muted"
@@ -149,7 +155,7 @@ export default function CheckModal({ id, onClose }) {
           >
             Прикреплённые файлы
           </div>
-          {hw.answerFiles.map((f, i) => (
+          {hw.answer_files.map((f, i) => (
             <div
               key={i}
               className="row"
@@ -183,15 +189,21 @@ export default function CheckModal({ id, onClose }) {
                   size={14}
                 />
               </div>
-              <div style={{ flex: 1 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 500 }}>
                   {f.name}
                 </div>
                 <div className="small muted">{f.size}</div>
               </div>
-              <Button size="sm" icon="download">
-                Открыть
-              </Button>
+              {f.url && (
+                <Button
+                  size="sm"
+                  icon="download"
+                  onClick={() => downloadFile(f.url, f.name)}
+                >
+                  Скачать
+                </Button>
+              )}
             </div>
           ))}
         </div>
@@ -199,7 +211,6 @@ export default function CheckModal({ id, onClose }) {
 
       <div className="divider" />
 
-      {/* ----- Форма проверки ----- */}
       <div className="grid cols-2" style={{ gap: 12 }}>
         <Field label="Оценка (1–5)">
           <input
@@ -217,8 +228,8 @@ export default function CheckModal({ id, onClose }) {
             className="input"
             readOnly
             value={
-              hw.submittedAt
-                ? new Date(hw.submittedAt).toLocaleDateString('ru-RU')
+              submittedTs
+                ? new Date(submittedTs).toLocaleDateString('ru-RU')
                 : '—'
             }
           />

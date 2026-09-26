@@ -1,75 +1,99 @@
 import { create } from 'zustand';
+import {
+  getMessages,
+  sendMessage,
+  markChatRead,
+  subscribeToChat,
+} from '../lib/messages';
 
-const INITIAL = {
-  c1: [
-    {
-      id: 'm1',
-      from: 't1',
-      text: 'Здравствуй, Алексей! Напоминаю про домашнее задание по квадратным уравнениям.',
-      at: Date.now() - 3 * 3600 * 1000,
-      read: true,
-    },
-    {
-      id: 'm2',
-      from: 's1',
-      text: 'Здравствуйте! Да, я помню, почти доделал.',
-      at: Date.now() - 2.5 * 3600 * 1000,
-      read: true,
-    },
-    {
-      id: 'm3',
-      from: 't1',
-      text: 'Отлично. Если будут вопросы — пиши.',
-      at: Date.now() - 2 * 3600 * 1000,
-      read: true,
-    },
-    {
-      id: 'm4',
-      from: 's1',
-      text: 'Я выполнил домашнее задание',
-      at: Date.now() - 40 * 60 * 1000,
-      read: true,
-      files: [{ name: 'homework_equations.pdf', size: '1.2 МБ', type: 'pdf' }],
-    },
-  ],
-  c2: [
-    {
-      id: 'm5',
-      from: 't2',
-      text: 'Алексей, напоминаю про сочинение. Срок — послезавтра.',
-      at: Date.now() - 5 * 3600 * 1000,
-      read: false,
-    },
-  ],
-  c3: [
-    {
-      id: 'm6',
-      from: 't3',
-      text: 'Задача 7 решается через второй закон Ньютона.',
-      at: Date.now() - 24 * 3600 * 1000,
-      read: true,
-    },
-  ],
-};
+export const useChats = create((set, get) => ({
+  // { [chatId]: messages[] }
+  threads: {},
+  loading: false,
+  // { [chatId]: unsubscribe }
+  subscriptions: {},
 
-export const useChats = create((set) => ({
-  threads: INITIAL,
-
-  addMessage: (chatId, msg) =>
+  // Загрузить сообщения чата
+  load: async (chatId) => {
+    set({ loading: true });
+    const messages = await getMessages(chatId);
     set((s) => ({
-      threads: {
-        ...s.threads,
-        [chatId]: [...(s.threads[chatId] || []), msg],
-      },
-    })),
+      threads: { ...s.threads, [chatId]: messages },
+      loading: false,
+    }));
+    return messages;
+  },
 
-  markRead: (chatId, userId) =>
+  // Подписаться на чат (Realtime)
+  subscribe: (chatId) => {
+    // если уже подписаны — пропустить
+    if (get().subscriptions[chatId]) return;
+
+    const unsub = subscribeToChat(chatId, (newMsg) => {
+      set((s) => {
+        const existing = s.threads[chatId] || [];
+        // защита от дублей
+        if (existing.some((m) => m.id === newMsg.id)) return s;
+        return {
+          threads: {
+            ...s.threads,
+            [chatId]: [...existing, newMsg],
+          },
+        };
+      });
+    });
+
+    set((s) => ({
+      subscriptions: { ...s.subscriptions, [chatId]: unsub },
+    }));
+  },
+
+  unsubscribe: (chatId) => {
+    const unsub = get().subscriptions[chatId];
+    if (unsub) unsub();
+    set((s) => {
+      const next = { ...s.subscriptions };
+      delete next[chatId];
+      return { subscriptions: next };
+    });
+  },
+
+  // Отправить сообщение
+  send: async ({ chatId, senderId, text, files }) => {
+    const res = await sendMessage({ chatId, senderId, text, files });
+    if (!res.ok) return res;
+
+    // оптимистично добавляем (если Realtime ещё не успел)
+    set((s) => {
+      const existing = s.threads[chatId] || [];
+      if (existing.some((m) => m.id === res.message.id)) return s;
+      return {
+        threads: {
+          ...s.threads,
+          [chatId]: [...existing, res.message],
+        },
+      };
+    });
+
+    return res;
+  },
+
+  // Пометить прочитанным
+  markRead: async (chatId, userId) => {
+    await markChatRead(chatId, userId);
     set((s) => ({
       threads: {
         ...s.threads,
         [chatId]: (s.threads[chatId] || []).map((m) =>
-          m.from !== userId ? { ...m, read: true } : m
+          m.sender_id !== userId ? { ...m, read: true } : m
         ),
       },
-    })),
+    }));
+  },
+
+  // Сброс (при выходе)
+  reset: () => {
+    Object.values(get().subscriptions).forEach((unsub) => unsub());
+    set({ threads: {}, subscriptions: {} });
+  },
 }));

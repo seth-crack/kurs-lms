@@ -1,12 +1,8 @@
-import { useState } from 'react';
+import { useEffect } from 'react';
 import { useAuth } from '../../store/useAuth';
-import { useUI } from '../../store/useUI';
-import { SCHEDULE, teacherById } from '../../data/mock';
-
+import { useSchedule } from '../../store/useSchedule';
+import { useUsers } from '../../store/useUsers';
 import Icon from '../../ui/Icon';
-import Button from '../../ui/Button';
-import Field from '../../ui/Field';
-import Modal from '../../ui/Modal';
 
 const DAYS = [
   'Понедельник',
@@ -17,43 +13,36 @@ const DAYS = [
   'Суббота',
 ];
 
-export default function SchedulePage({ asTeacher = false }) {
+export default function SchedulePage() {
   const user = useAuth((s) => s.user);
-  const toast = useUI((s) => s.toast);
-  const [editModal, setEditModal] = useState(null);
+  const items = useSchedule((s) => s.items);
+  const refresh = useSchedule((s) => s.refresh);
+  const users = useUsers((s) => s.users);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
 
   const today = new Date().getDay();
   const todayIdx = today === 0 ? 6 : today - 1;
 
-  const lessons =
-    asTeacher && user?.id
-      ? SCHEDULE.filter((l) => l.teacherId === user.id)
-      : SCHEDULE;
+  // Ученик видит занятия своего учителя
+  const teacherLessons = user?.teacher_id
+    ? items.filter((l) => l.teacher_id === user.teacher_id)
+    : [];
 
   return (
     <>
       <div className="page-head">
         <div>
           <div className="page-title">Расписание</div>
-          <div className="page-sub">
-            {asTeacher ? 'Ваши занятия' : 'Занятия на эту неделю'}
-          </div>
+          <div className="page-sub">Занятия на эту неделю</div>
         </div>
-
-        {asTeacher && (
-          <Button
-            variant="primary"
-            icon="plus"
-            onClick={() => setEditModal({})}
-          >
-            Добавить занятие
-          </Button>
-        )}
       </div>
 
       <div className="card pad-0">
         {DAYS.map((day, i) => {
-          const dayLessons = lessons.filter((l) => l.day === i);
+          const dayLessons = teacherLessons.filter((l) => l.day === i);
           const isToday = i === todayIdx;
 
           return (
@@ -65,13 +54,18 @@ export default function SchedulePage({ asTeacher = false }) {
                 className="row between"
                 style={{
                   padding: '10px 18px',
-                  background: isToday ? 'var(--accent-soft)' : 'transparent',
+                  background: isToday
+                    ? 'var(--accent-soft)'
+                    : 'transparent',
                 }}
               >
                 <div style={{ fontWeight: 600, fontSize: 13.5 }}>
                   {day}
                   {isToday && (
-                    <span className="badge new" style={{ marginLeft: 8 }}>
+                    <span
+                      className="badge new"
+                      style={{ marginLeft: 8 }}
+                    >
                       сегодня
                     </span>
                   )}
@@ -95,7 +89,7 @@ export default function SchedulePage({ asTeacher = false }) {
                 </div>
               ) : (
                 dayLessons.map((l) => {
-                  const t = teacherById(l.teacherId);
+                  const t = users.find((u) => u.id === l.teacher_id);
                   return (
                     <div
                       key={l.id}
@@ -116,7 +110,6 @@ export default function SchedulePage({ asTeacher = false }) {
                       >
                         {l.time}
                       </div>
-
                       <div
                         style={{
                           width: 4,
@@ -126,31 +119,15 @@ export default function SchedulePage({ asTeacher = false }) {
                           flexShrink: 0,
                         }}
                       />
-
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontWeight: 500, fontSize: 13.5 }}>
                           {l.subject}
                         </div>
                         <div className="small muted">
-                          {t?.name} · {l.group} · {l.room}
+                          {t ? `${t.name} · ` : ''}
+                          {l.room || '—'} · {l.dur}
                         </div>
                       </div>
-
-                      <div
-                        className="small muted hide-mobile"
-                        style={{ width: 60, textAlign: 'right' }}
-                      >
-                        {l.dur}
-                      </div>
-
-                      {asTeacher && (
-                        <Button
-                          size="sm"
-                          onClick={() => setEditModal(l)}
-                        >
-                          Изменить
-                        </Button>
-                      )}
                     </div>
                   );
                 })
@@ -160,80 +137,19 @@ export default function SchedulePage({ asTeacher = false }) {
         })}
       </div>
 
-      {editModal && (
-        <Modal
-          open
-          onClose={() => setEditModal(null)}
-          title={
-            editModal.id ? 'Редактирование занятия' : 'Новое занятие'
-          }
-          footer={
-            <>
-              <Button onClick={() => setEditModal(null)}>Отмена</Button>
-              <Button
-                variant="primary"
-                onClick={() => {
-                  setEditModal(null);
-                  toast(
-                    'success',
-                    'Занятие сохранено',
-                    'Изменения появятся в расписании'
-                  );
-                }}
-              >
-                Сохранить
-              </Button>
-            </>
-          }
-        >
-          <div className="stack">
-            <Field label="Предмет">
-              <input
-                className="input"
-                defaultValue={editModal.subject || ''}
-                placeholder="Математика"
-              />
-            </Field>
-
-            <div className="grid cols-2" style={{ gap: 12 }}>
-              <Field label="День">
-                <select
-                  className="select"
-                  defaultValue={editModal.day ?? 0}
-                >
-                  {DAYS.map((d, i) => (
-                    <option key={i} value={i}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Время">
-                <input
-                  className="input"
-                  defaultValue={editModal.time || '18:00'}
-                />
-              </Field>
-            </div>
-
-            <div className="grid cols-2" style={{ gap: 12 }}>
-              <Field label="Группа">
-                <input
-                  className="input"
-                  defaultValue={editModal.group || '10-А'}
-                />
-              </Field>
-              <Field label="Кабинет">
-                <input
-                  className="input"
-                  defaultValue={editModal.room || ''}
-                  placeholder="каб. 214"
-                />
-              </Field>
-            </div>
+      <div className="card" style={{ marginTop: 16 }}>
+        <div className="row" style={{ gap: 8 }}>
+          <Icon
+            name="info"
+            size={14}
+            style={{ color: 'var(--text-3)' }}
+          />
+          <div className="small muted">
+            Расписание редактируется учителем. Если нужны изменения —
+            напишите ему в чат.
           </div>
-        </Modal>
-      )}
+        </div>
+      </div>
     </>
   );
 }

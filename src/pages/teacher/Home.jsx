@@ -1,6 +1,6 @@
 import { useAuth } from '../../store/useAuth';
 import { useNavigate } from 'react-router-dom';
-import { STUDENTS, GROUPS, SCHEDULE, studentById } from '../../data/mock';
+import { useUsers } from '../../store/useUsers';
 import { useHomework } from '../../store/useHomework';
 import { fmtRelative } from '../../lib/time';
 
@@ -9,23 +9,32 @@ import Avatar from '../../ui/Avatar';
 import Button from '../../ui/Button';
 import Empty from '../../ui/Empty';
 
+import DonutChart from '../../features/charts/DonutChart';
+
 export default function TeacherHome() {
   const user = useAuth((s) => s.user);
   const navigate = useNavigate();
+  const users = useUsers((s) => s.users);
   const items = useHomework((s) => s.items);
 
-  const toCheck = items.filter(
-    (h) => h.status === 'submitted' && h.teacherId === user.id
+  const myItems = items.filter((h) => h.teacherId === user.id);
+  const toCheck = myItems.filter((h) => h.status === 'submitted');
+  const myStudents = users.filter(
+    (u) => u.role === 'student' && u.teacherId === user.id
   );
 
-  const myGroups = GROUPS.filter((g) => g.teacher === user.id);
-  const myStudents = STUDENTS.filter((s) =>
-    myGroups.some((g) => g.students.includes(s.id))
-  );
+  const graded = myItems.filter((h) => h.grade != null);
+  const avg = graded.length
+    ? (graded.reduce((a, h) => a + h.grade, 0) / graded.length).toFixed(1)
+    : '—';
 
-  const todayLessons = SCHEDULE.filter(
-    (s) => s.teacherId === user.id
-  ).slice(0, 3);
+  const statusCounts = [
+    { label: 'Новые',       value: myItems.filter((h) => h.status === 'new').length,       color: 'var(--info)' },
+    { label: 'В процессе',  value: myItems.filter((h) => h.status === 'in_progress').length, color: 'var(--warning)' },
+    { label: 'На проверку', value: myItems.filter((h) => h.status === 'submitted').length, color: 'var(--accent)' },
+    { label: 'Проверено',   value: myItems.filter((h) => h.status === 'graded').length,    color: 'var(--success)' },
+    { label: 'Просрочено',  value: myItems.filter((h) => h.status === 'overdue').length,   color: 'var(--danger)' },
+  ].filter((s) => s.value > 0);
 
   return (
     <>
@@ -36,13 +45,14 @@ export default function TeacherHome() {
           </div>
           <div className="page-sub">
             {toCheck.length} работ ожидают проверки · {myStudents.length}{' '}
-            учеников · {todayLessons.length} занятия сегодня
+            учеников
           </div>
         </div>
         <Button
           variant="primary"
           icon="plus"
           onClick={() => navigate('/homework')}
+          disabled={myStudents.length === 0}
         >
           Новое задание
         </Button>
@@ -54,7 +64,7 @@ export default function TeacherHome() {
             <Icon name="users" size={13} /> Учеников
           </div>
           <div className="s-value">{myStudents.length}</div>
-          <div className="s-sub">в {myGroups.length} группах</div>
+          <div className="s-sub">в вашей школе</div>
         </div>
 
         <div className="card stat">
@@ -72,18 +82,20 @@ export default function TeacherHome() {
 
         <div className="card stat">
           <div className="s-label">
-            <Icon name="calendar" size={13} /> Занятий сегодня
+            <Icon name="file-text" size={13} /> Всего заданий
           </div>
-          <div className="s-value">{todayLessons.length}</div>
-          <div className="s-sub">по расписанию</div>
+          <div className="s-value">{myItems.length}</div>
+          <div className="s-sub">создано вами</div>
         </div>
 
         <div className="card stat">
           <div className="s-label">
             <Icon name="bar-chart-2" size={13} /> Средний балл
           </div>
-          <div className="s-value">4.4</div>
-          <div className="s-sub">по всем ученикам</div>
+          <div className="s-value">{avg}</div>
+          <div className="s-sub">
+            {graded.length > 0 ? `по ${graded.length} работам` : 'нет оценок'}
+          </div>
         </div>
       </div>
 
@@ -100,7 +112,10 @@ export default function TeacherHome() {
             }}
           >
             <div style={{ fontWeight: 600 }}>Работы на проверку</div>
-            <span className="link small" onClick={() => navigate('/homework')}>
+            <span
+              className="link small"
+              onClick={() => navigate('/homework')}
+            >
               Все задания →
             </span>
           </div>
@@ -109,11 +124,11 @@ export default function TeacherHome() {
             <Empty
               icon="check-circle-2"
               title="Всё проверено"
-              desc="Новые работы появятся здесь, как только ученики их отправят"
+              desc="Новые работы появятся здесь, когда ученики их отправят"
             />
           ) : (
             toCheck.map((h) => {
-              const s = studentById(h.studentIds[0]);
+              const s = users.find((u) => u.id === h.student_ids?.[0]);
               if (!s) return null;
               return (
                 <div
@@ -121,7 +136,16 @@ export default function TeacherHome() {
                   className="hw-row"
                   onClick={() => navigate('/homework')}
                 >
-                  <Avatar short={s.short} color={s.color} size="m" />
+                  <Avatar
+                    short={s.name
+                      .split(' ')
+                      .map((x) => x[0])
+                      .slice(0, 2)
+                      .join('')
+                      .toUpperCase()}
+                    color={s.color}
+                    size="m"
+                  />
                   <div className="hw-body">
                     <div className="hw-title">{s.name}</div>
                     <div className="hw-meta">
@@ -145,53 +169,38 @@ export default function TeacherHome() {
         </div>
 
         <div className="stack">
-          <div className="card pad-0">
+          {myStudents.length === 0 && (
             <div
-              className="row between"
+              className="card"
               style={{
-                padding: '14px 18px',
-                borderBottom: '1px solid var(--border)',
+                background: 'var(--accent-soft)',
+                borderColor: 'var(--accent)',
               }}
             >
-              <div style={{ fontWeight: 600 }}>Расписание на сегодня</div>
-              <span
-                className="link small"
-                onClick={() => navigate('/schedule')}
+              <div style={{ fontWeight: 600, marginBottom: 8 }}>
+                Начните работу
+              </div>
+              <div
+                className="small"
+                style={{
+                  color: 'var(--text-2)',
+                  lineHeight: 1.5,
+                  marginBottom: 12,
+                }}
               >
-                Всё →
-              </span>
+                Добавьте первого ученика — он получит email и пароль для
+                входа в систему.
+              </div>
+              <Button
+                variant="primary"
+                block
+                icon="plus"
+                onClick={() => navigate('/students')}
+              >
+                Добавить ученика
+              </Button>
             </div>
-            {todayLessons.length === 0 ? (
-              <Empty icon="calendar" title="Занятий нет" />
-            ) : (
-              todayLessons.map((l) => (
-                <div
-                  key={l.id}
-                  className="row"
-                  style={{
-                    gap: 12,
-                    padding: '12px 18px',
-                    borderBottom: '1px solid var(--border)',
-                  }}
-                >
-                  <div
-                    className="mono"
-                    style={{ width: 52, fontWeight: 600, fontSize: 13.5 }}
-                  >
-                    {l.time}
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 500, fontSize: 13 }}>
-                      {l.subject}
-                    </div>
-                    <div className="small muted">
-                      {l.group} · {l.room}
-                    </div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+          )}
 
           <div className="card">
             <div style={{ fontWeight: 600, marginBottom: 12 }}>
@@ -203,7 +212,7 @@ export default function TeacherHome() {
                 icon="users"
                 onClick={() => navigate('/students')}
               >
-                Все ученики
+                Ученики
               </Button>
               <Button
                 block
@@ -214,15 +223,24 @@ export default function TeacherHome() {
               </Button>
               <Button
                 block
-                icon="folder"
-                onClick={() => navigate('/materials')}
+                icon="file-text"
+                onClick={() => navigate('/homework')}
               >
-                Материалы
+                Задания
               </Button>
             </div>
           </div>
         </div>
       </div>
+
+      {statusCounts.length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <div style={{ fontWeight: 600, marginBottom: 12 }}>
+            Статусы заданий
+          </div>
+          <DonutChart data={statusCounts} size={130} />
+        </div>
+      )}
     </>
   );
 }

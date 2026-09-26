@@ -1,9 +1,13 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../store/useAuth';
 import { useUI } from '../../store/useUI';
-import { HOMEWORK, teacherById } from '../../data/mock';
-import { fmtRelative } from '../../lib/time';
-import { toFileMeta } from '../../lib/files';
+import { useHomework } from '../../store/useHomework';
+import { useUsers } from '../../store/useUsers';
+import { fmtRelative, fmtDate } from '../../lib/time';
+import { useDraft } from '../../features/drafts/useDraft';
+import DraftIndicator from '../../features/drafts/DraftIndicator';
+import { clearDraft } from '../../lib/draft';
+import { uploadFiles, downloadFile } from '../../lib/upload';
 
 import Badge from '../../ui/Badge';
 import Button from '../../ui/Button';
@@ -16,23 +20,26 @@ import { CardSkeleton } from '../../ui/Skeleton';
 
 export default function StudentHomework() {
   const user = useAuth((s) => s.user);
-  const toast = useUI((s) => s.toast);
+  const items = useHomework((s) => s.items);
+  const update = useHomework((s) => s.update);
+  const users = useUsers((s) => s.users);
+  const refresh = useHomework((s) => s.refresh);
 
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
   const [q, setQ] = useState('');
   const [openId, setOpenId] = useState(null);
 
-  // локальное состояние домашних заданий (имитация базы)
-  const [items, setItems] = useState(HOMEWORK);
-
   useEffect(() => {
-    const t = setTimeout(() => setLoading(false), 450);
-    return () => clearTimeout(t);
-  }, []);
+    const load = async () => {
+      await refresh();
+      setLoading(false);
+    };
+    load();
+  }, [refresh]);
 
   const my = useMemo(
-    () => items.filter((h) => h.studentIds.includes(user.id)),
+    () => items.filter((h) => h.student_ids?.includes(user.id)),
     [items, user.id]
   );
 
@@ -50,10 +57,6 @@ export default function StudentHomework() {
 
   const current = items.find((h) => h.id === openId);
 
-  const updateHomework = (id, patch) => {
-    setItems((arr) => arr.map((h) => (h.id === id ? { ...h, ...patch } : h)));
-  };
-
   return (
     <>
       <div className="page-head">
@@ -65,7 +68,6 @@ export default function StudentHomework() {
         </div>
       </div>
 
-      {/* ----- Панель фильтров ----- */}
       <div
         className="row"
         style={{ marginBottom: 16, gap: 10, flexWrap: 'wrap' }}
@@ -111,7 +113,6 @@ export default function StudentHomework() {
         ]}
       />
 
-      {/* ----- Список ----- */}
       {loading ? (
         <div className="stack">
           <CardSkeleton />
@@ -122,16 +123,25 @@ export default function StudentHomework() {
         <div className="card pad-0">
           <Empty
             icon="file-text"
-            title="Ничего не найдено"
-            desc="Попробуйте изменить фильтр или поисковый запрос"
+            title={
+              my.length === 0 ? 'Заданий пока нет' : 'Ничего не найдено'
+            }
+            desc={
+              my.length === 0
+                ? 'Когда учитель назначит задание — оно появится здесь'
+                : 'Попробуйте изменить фильтр или поиск'
+            }
           />
         </div>
       ) : (
         <div className="card pad-0">
           {filtered.map((h) => {
-            const t = teacherById(h.teacherId);
+            const t = users.find((u) => u.id === h.teacher_id);
+            const deadlineTs = h.deadline
+              ? new Date(h.deadline).getTime()
+              : 0;
             const overdue =
-              h.deadline < Date.now() && h.status !== 'graded';
+              deadlineTs < Date.now() && h.status !== 'graded';
             return (
               <div
                 key={h.id}
@@ -158,10 +168,7 @@ export default function StudentHomework() {
                 </div>
 
                 <div className="hw-body">
-                  <div
-                    className="row between"
-                    style={{ gap: 10 }}
-                  >
+                  <div className="row between" style={{ gap: 10 }}>
                     <div className="hw-title">{h.title}</div>
                     {h.grade != null && (
                       <div
@@ -175,8 +182,12 @@ export default function StudentHomework() {
 
                   <div className="hw-meta">
                     <span>{h.subject}</span>
-                    <span>·</span>
-                    <span>{t?.name}</span>
+                    {t && (
+                      <>
+                        <span>·</span>
+                        <span>{t.name}</span>
+                      </>
+                    )}
                     <span>·</span>
                     <span
                       style={{
@@ -184,7 +195,7 @@ export default function StudentHomework() {
                       }}
                     >
                       <Icon name="clock" size={11} />{' '}
-                      {fmtRelative(h.deadline)}
+                      {fmtRelative(deadlineTs)}
                     </span>
                   </div>
 
@@ -204,13 +215,13 @@ export default function StudentHomework() {
         </div>
       )}
 
-      {/* ----- Модалка деталей ----- */}
       {current && (
         <HomeworkDetail
+          key={current.id}
           hw={current}
           onClose={() => setOpenId(null)}
-          onUpdate={updateHomework}
-          toast={toast}
+          onUpdate={update}
+          teacher={users.find((u) => u.id === current.teacher_id) || null}
         />
       )}
     </>
@@ -218,57 +229,64 @@ export default function StudentHomework() {
 }
 
 /* ============================================================
-   Модалка с деталями задания
+   Модалка задания
    ============================================================ */
-function HomeworkDetail({ hw, onClose, onUpdate, toast }) {
-  const [answer, setAnswer] = useState(hw.answer || '');
-  const [files, setFiles] = useState(hw.answerFiles || []);
-  const [sending, setSending] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  const teacher = teacherById(hw.teacherId);
+function HomeworkDetail({ hw, onClose, onUpdate, teacher }) {
+  const toast = useUI((s) => s.toast);
   const isGraded = hw.status === 'graded';
   const isSubmitted = hw.status === 'submitted';
 
-  const handleFiles = (e) => {
+  const draft = useDraft(
+    hw.id,
+    { answer: hw.answer || '', files: hw.answer_files || [] },
+    !isGraded,
+    2000
+  );
+
+  const [sending, setSending] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [uploading, setUploading] = useState(false);
+
+  const handleFiles = async (e) => {
     const list = Array.from(e.target.files || []);
-    const metas = list.map((f) => {
-      const m = toFileMeta(f);
-      return { name: m.name, size: m.size, type: m.type };
-    });
-    setFiles((f) => [...f, ...metas]);
+    if (list.length === 0) return;
+    setUploading(true);
+    const uploaded = await uploadFiles(list, 'answers');
+    draft.setFiles((arr) => [...arr, ...uploaded]);
+    setUploading(false);
   };
 
   const removeFile = (i) => {
-    setFiles((f) => f.filter((_, j) => j !== i));
+    draft.setFiles((arr) => arr.filter((_, j) => j !== i));
   };
 
-  const submit = () => {
-    if (!answer.trim() && files.length === 0) {
+  const submit = async () => {
+    if (!draft.answer.trim() && draft.files.length === 0) {
       toast('warn', 'Пустой ответ', 'Введите текст или прикрепите файл');
       return;
     }
     setSending(true);
+    await onUpdate(hw.id, {
+      answer: draft.answer.trim(),
+      answer_files: draft.files,
+      status: 'submitted',
+      submitted_at: new Date().toISOString(),
+    });
+    clearDraft(hw.id);
+    setSending(false);
+    setSaved(true);
+    toast(
+      'success',
+      'Задание отправлено',
+      teacher ? `${teacher.name} получил вашу работу` : 'Работа отправлена'
+    );
     setTimeout(() => {
-      onUpdate(hw.id, {
-        answer: answer.trim(),
-        answerFiles: files,
-        status: 'submitted',
-        submittedAt: Date.now(),
-      });
-      setSending(false);
-      setSaved(true);
-      toast(
-        'success',
-        'Задание отправлено',
-        `Преподаватель ${teacher?.name} получил вашу работу`
-      );
-      setTimeout(() => {
-        setSaved(false);
-        onClose();
-      }, 1200);
-    }, 650);
+      setSaved(false);
+      onClose();
+    }, 1200);
   };
+
+  const deadlineTs = hw.deadline ? new Date(hw.deadline).getTime() : 0;
 
   return (
     <Modal
@@ -283,7 +301,7 @@ function HomeworkDetail({ hw, onClose, onUpdate, toast }) {
             <Button
               variant="primary"
               onClick={submit}
-              disabled={sending}
+              disabled={sending || uploading}
             >
               {sending
                 ? 'Отправка…'
@@ -295,18 +313,17 @@ function HomeworkDetail({ hw, onClose, onUpdate, toast }) {
         </>
       }
     >
-      {/* ----- Заголовок ----- */}
       <div className="row between" style={{ marginBottom: 14 }}>
         <div>
           <div style={{ fontWeight: 650, fontSize: 16 }}>{hw.title}</div>
           <div className="small muted" style={{ marginTop: 2 }}>
-            {hw.subject} · {teacher?.name}
+            {hw.subject}
+            {teacher ? ` · ${teacher.name}` : ''}
           </div>
         </div>
         <Badge status={hw.status} />
       </div>
 
-      {/* ----- Мета ----- */}
       <div
         className="row"
         style={{ gap: 16, marginBottom: 14, flexWrap: 'wrap' }}
@@ -315,21 +332,20 @@ function HomeworkDetail({ hw, onClose, onUpdate, toast }) {
           <span className="muted">Дедлайн: </span>
           <b
             style={{
-              color: hw.deadline < Date.now() ? 'var(--danger)' : 'inherit',
+              color: deadlineTs < Date.now() ? 'var(--danger)' : 'inherit',
             }}
           >
-            {fmtRelative(hw.deadline)}
+            {fmtRelative(deadlineTs)}
           </b>
         </div>
-        {hw.submittedAt && (
+        {hw.submitted_at && (
           <div className="small">
             <span className="muted">Отправлено: </span>
-            <b>{fmtRelative(hw.submittedAt)}</b>
+            <b>{fmtRelative(new Date(hw.submitted_at).getTime())}</b>
           </div>
         )}
       </div>
 
-      {/* ----- Описание ----- */}
       <div
         className="card"
         style={{ background: 'var(--surface-2)', marginBottom: 14 }}
@@ -340,17 +356,18 @@ function HomeworkDetail({ hw, onClose, onUpdate, toast }) {
         >
           Описание
         </div>
-        <div style={{ fontSize: 13.5, lineHeight: 1.6 }}>{hw.desc}</div>
+        <div style={{ fontSize: 13.5, lineHeight: 1.6 }}>
+          {hw.description}
+        </div>
       </div>
 
-      {/* ----- Файлы от учителя ----- */}
       {hw.attachments?.length > 0 && (
         <div style={{ marginBottom: 14 }}>
           <div
             className="small muted"
             style={{ marginBottom: 6, fontWeight: 600 }}
           >
-            Файлы от преподавателя
+            Файлы от учителя
           </div>
           {hw.attachments.map((f, i) => (
             <div
@@ -380,34 +397,21 @@ function HomeworkDetail({ hw, onClose, onUpdate, toast }) {
                   size={14}
                 />
               </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>{f.name}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>
+                  {f.name}
+                </div>
                 <div className="small muted">{f.size}</div>
               </div>
-              <Button size="sm" icon="download">
-                Скачать
-              </Button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* ----- Доп. материалы ----- */}
-      {hw.materials?.length > 0 && (
-        <div style={{ marginBottom: 14 }}>
-          <div
-            className="small muted"
-            style={{ marginBottom: 6, fontWeight: 600 }}
-          >
-            Дополнительные материалы
-          </div>
-          {hw.materials.map((m, i) => (
-            <div
-              key={i}
-              className="link small"
-              style={{ display: 'block', marginBottom: 4 }}
-            >
-              <Icon name="link" size={12} /> {m.name}
+              {f.url && (
+                <Button
+                  size="sm"
+                  icon="download"
+                  onClick={() => downloadFile(f.url, f.name)}
+                >
+                  Скачать
+                </Button>
+              )}
             </div>
           ))}
         </div>
@@ -415,9 +419,11 @@ function HomeworkDetail({ hw, onClose, onUpdate, toast }) {
 
       <div className="divider" />
 
-      {/* ----- Оценка (если проверено) ----- */}
       {isGraded && (
-        <div className="row" style={{ gap: 12, alignItems: 'flex-start', marginBottom: 14 }}>
+        <div
+          className="row"
+          style={{ gap: 12, alignItems: 'flex-start', marginBottom: 14 }}
+        >
           <div
             className={`grade-circle grade-${hw.grade}`}
             style={{ width: 52, height: 52, fontSize: 18 }}
@@ -434,46 +440,68 @@ function HomeworkDetail({ hw, onClose, onUpdate, toast }) {
             >
               {hw.comment || 'Без комментария'}
             </div>
+            {hw.graded_at && (
+              <div className="small muted" style={{ marginTop: 6 }}>
+                {fmtDate(new Date(hw.graded_at).getTime())}
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* ----- Поле ответа ----- */}
       <Field
         label="Ваш ответ"
         hint={
           isGraded
-            ? 'Работа уже проверена — редактирование недоступно'
-            : 'Можно прикрепить файл с решением'
+            ? 'Работа проверена — редактирование недоступно'
+            : 'Черновик сохраняется автоматически'
         }
       >
         <textarea
           className="textarea"
-          placeholder="Введите ответ или комментарий…"
-          value={answer}
-          onChange={(e) => setAnswer(e.target.value)}
+          placeholder="Введите ответ…"
+          value={draft.answer}
+          onChange={(e) => draft.setAnswer(e.target.value)}
           disabled={isGraded}
         />
       </Field>
 
-      {/* ----- Прикрепление файлов ----- */}
+      {!isGraded && (
+        <DraftIndicator
+          status={draft.status}
+          lastSavedAt={draft.lastSavedAt}
+          onClear={draft.clear}
+        />
+      )}
+
       {!isGraded && (
         <div style={{ marginTop: 12 }}>
-          <label className="btn" style={{ cursor: 'pointer' }}>
-            <Icon name="paperclip" size={14} /> Прикрепить файл
+          <label
+            className="btn"
+            style={{
+              cursor: uploading ? 'wait' : 'pointer',
+              opacity: uploading ? 0.6 : 1,
+            }}
+          >
+            <Icon
+              name={uploading ? 'refresh-cw' : 'paperclip'}
+              size={14}
+            />
+            {uploading ? 'Загрузка…' : 'Прикрепить файл'}
             <input
               type="file"
               multiple
               style={{ display: 'none' }}
               onChange={handleFiles}
+              disabled={uploading}
             />
           </label>
         </div>
       )}
 
-      {files.length > 0 && (
+      {draft.files.length > 0 && (
         <div style={{ marginTop: 10 }}>
-          {files.map((f, i) => (
+          {draft.files.map((f, i) => (
             <div
               key={i}
               className="row"
@@ -507,8 +535,10 @@ function HomeworkDetail({ hw, onClose, onUpdate, toast }) {
                   size={14}
                 />
               </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>{f.name}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>
+                  {f.name}
+                </div>
                 <div className="small muted">{f.size}</div>
               </div>
               {!isGraded && (
@@ -524,7 +554,6 @@ function HomeworkDetail({ hw, onClose, onUpdate, toast }) {
         </div>
       )}
 
-      {/* ----- Подтверждение отправки ----- */}
       {saved && (
         <div
           className="card"
@@ -537,7 +566,7 @@ function HomeworkDetail({ hw, onClose, onUpdate, toast }) {
         >
           <div className="row" style={{ gap: 8 }}>
             <Icon name="check-circle-2" size={16} />
-            <b>Задание отправлено преподавателю</b>
+            <b>Задание отправлено</b>
           </div>
         </div>
       )}

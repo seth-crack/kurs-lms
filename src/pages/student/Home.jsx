@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../store/useAuth';
-import { HOMEWORK, SCHEDULE, SUBJECTS, teacherById } from '../../data/mock';
+import { useHomework } from '../../store/useHomework';
+import { useUsers } from '../../store/useUsers';
+import { SUBJECTS, SCHEDULE_TEMPLATE } from '../../data/mock';
 import { fmtRelative, fmtDate } from '../../lib/time';
 
 import Badge from '../../ui/Badge';
@@ -11,24 +13,33 @@ import Progress from '../../ui/Progress';
 import { CardSkeleton } from '../../ui/Skeleton';
 import Empty from '../../ui/Empty';
 
+import DonutChart from '../../features/charts/DonutChart';
+
 export default function StudentHome() {
   const user = useAuth((s) => s.user);
+  const items = useHomework((s) => s.items);
+  const users = useUsers((s) => s.users);
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
-  const [now, setNow] = useState(null);
 
   useEffect(() => {
-    setNow(Date.now());
     const t = setTimeout(() => setLoading(false), 400);
     return () => clearTimeout(t);
   }, []);
 
-  const myHw = HOMEWORK.filter((h) => h.studentIds.includes(user.id));
+  const teacher = user.teacherId
+    ? users.find((u) => u.id === user.teacherId)
+    : null;
+
+  const myHw = items.filter((h) => h.student_ids?.includes(user.id));
   const upcoming = [...myHw]
     .filter((h) => h.status !== 'graded')
     .sort((a, b) => a.deadline - b.deadline);
-  const nextHw = upcoming[0];
-  const recentGrades = myHw.filter((h) => h.grade != null).slice(0, 3);
+
+  const recentGrades = myHw
+    .filter((h) => h.grade != null)
+    .sort((a, b) => (b.gradedAt || 0) - (a.gradedAt || 0))
+    .slice(0, 3);
 
   const subjectProgress = SUBJECTS.map((s) => {
     const list = myHw.filter((h) => h.subject === s);
@@ -41,10 +52,18 @@ export default function StudentHome() {
     };
   }).filter((x) => x.total > 0);
 
-  const nextLesson = SCHEDULE[0];
-  const avgGrade =
-    myHw.filter((h) => h.grade != null).reduce((a, h) => a + h.grade, 0) /
-      Math.max(myHw.filter((h) => h.grade != null).length, 1) || 0;
+  const gradedOnly = myHw.filter((h) => h.grade != null);
+  const avgGrade = gradedOnly.length
+    ? gradedOnly.reduce((a, h) => a + h.grade, 0) / gradedOnly.length
+    : 0;
+
+  const statusCounts = [
+    { label: 'Новые',      value: myHw.filter((h) => h.status === 'new').length,       color: 'var(--info)' },
+    { label: 'В процессе', value: myHw.filter((h) => h.status === 'in_progress').length, color: 'var(--warning)' },
+    { label: 'Отправлено', value: myHw.filter((h) => h.status === 'submitted').length, color: 'var(--accent)' },
+    { label: 'Проверено',  value: myHw.filter((h) => h.status === 'graded').length,    color: 'var(--success)' },
+    { label: 'Просрочено', value: myHw.filter((h) => h.status === 'overdue').length,   color: 'var(--danger)' },
+  ].filter((s) => s.value > 0);
 
   if (loading) {
     return (
@@ -56,9 +75,7 @@ export default function StudentHome() {
           </div>
         </div>
         <div className="grid cols-4" style={{ marginBottom: 16 }}>
-          {[1, 2, 3, 4].map((i) => (
-            <CardSkeleton key={i} />
-          ))}
+          {[1, 2, 3, 4].map((i) => <CardSkeleton key={i} />)}
         </div>
       </>
     );
@@ -66,22 +83,19 @@ export default function StudentHome() {
 
   return (
     <>
-      {/* ----- Заголовок ----- */}
       <div className="page-head">
         <div>
           <div className="page-title">
             Привет, {user.name.split(' ')[0]} 👋
           </div>
           <div className="page-sub">
-            {upcoming.length > 0
-              ? `У тебя ${upcoming.length} ${
-                  upcoming.length === 1
-                    ? 'задание'
-                    : upcoming.length < 5
-                    ? 'задания'
-                    : 'заданий'
-                } · Ближайшее занятие — ${nextLesson.subject}, сегодня в ${nextLesson.time}`
-              : 'Все задания выполнены — отличная работа!'}
+            {teacher
+              ? `Твой преподаватель: ${teacher.name}`
+              : 'Добро пожаловать на платформу'}
+            {upcoming.length > 0 &&
+              ` · У тебя ${upcoming.length} ${
+                upcoming.length === 1 ? 'задание' : 'задания'
+              }`}
           </div>
         </div>
         <Button
@@ -93,11 +107,10 @@ export default function StudentHome() {
         </Button>
       </div>
 
-      {/* ----- Статистика ----- */}
       <div className="grid cols-4" style={{ marginBottom: 16 }}>
         <div className="card stat">
           <div className="s-label">
-            <Icon name="file-text" size={13} /> Активных заданий
+            <Icon name="file-text" size={13} /> Активных
           </div>
           <div className="s-value">{upcoming.length}</div>
           <div className="s-sub">
@@ -109,8 +122,12 @@ export default function StudentHome() {
           <div className="s-label">
             <Icon name="award" size={13} /> Средний балл
           </div>
-          <div className="s-value">{avgGrade.toFixed(1)}</div>
-          <div className="s-sub">за последние 30 дней</div>
+          <div className="s-value">
+            {avgGrade > 0 ? avgGrade.toFixed(1) : '—'}
+          </div>
+          <div className="s-sub">
+            {gradedOnly.length > 0 ? `по ${gradedOnly.length} работам` : 'нет оценок'}
+          </div>
         </div>
 
         <div className="card stat">
@@ -120,7 +137,7 @@ export default function StudentHome() {
           <div className="s-value">
             {myHw.filter((h) => h.status === 'graded').length}
           </div>
-          <div className="s-sub">из {myHw.length} заданий</div>
+          <div className="s-sub">из {myHw.length}</div>
         </div>
 
         <div className="card stat">
@@ -129,7 +146,11 @@ export default function StudentHome() {
           </div>
           <div
             className="s-value"
-            style={{ color: 'var(--danger)' }}
+            style={{
+              color: myHw.filter((h) => h.status === 'overdue').length
+                ? 'var(--danger)'
+                : 'inherit',
+            }}
           >
             {myHw.filter((h) => h.status === 'overdue').length}
           </div>
@@ -137,12 +158,10 @@ export default function StudentHome() {
         </div>
       </div>
 
-      {/* ----- 2 колонки ----- */}
       <div
         className="grid"
         style={{ gridTemplateColumns: '1.4fr 1fr', gap: 16 }}
       >
-        {/* ----- Ближайшие дедлайны ----- */}
         <div className="card pad-0">
           <div
             className="row between"
@@ -152,11 +171,8 @@ export default function StudentHome() {
             }}
           >
             <div style={{ fontWeight: 600 }}>Ближайшие дедлайны</div>
-            <span
-              className="link small"
-              onClick={() => navigate('/homework')}
-            >
-              Все задания →
+            <span className="link small" onClick={() => navigate('/homework')}>
+              Все →
             </span>
           </div>
 
@@ -164,11 +180,11 @@ export default function StudentHome() {
             <Empty
               icon="check-circle-2"
               title="Нет активных заданий"
-              desc="Когда появятся новые задания, они отобразятся здесь"
+              desc="Когда учитель назначит задание — оно появится здесь"
             />
           ) : (
             upcoming.slice(0, 4).map((h) => {
-              const t = teacherById(h.teacherId);
+              const t = users.find((u) => u.id === h.teacherId);
               return (
                 <div
                   key={h.id}
@@ -182,15 +198,19 @@ export default function StudentHome() {
                     <div className="hw-title">{h.title}</div>
                     <div className="hw-meta">
                       <span>{h.subject}</span>
-                      <span>·</span>
-                      <span>{t?.name}</span>
+                      {t && (
+                        <>
+                          <span>·</span>
+                          <span>{t.name}</span>
+                        </>
+                      )}
                     </div>
                     <div className="hw-meta" style={{ marginTop: 6 }}>
                       <Badge status={h.status} />
                       <span
                         style={{
                           color:
-                            now !== null && h.deadline < now
+                            h.deadline < Date.now()
                               ? 'var(--danger)'
                               : 'var(--text-3)',
                         }}
@@ -206,9 +226,7 @@ export default function StudentHome() {
           )}
         </div>
 
-        {/* ----- Правая колонка ----- */}
         <div className="stack">
-          {/* Прогресс по предметам */}
           <div className="card">
             <div style={{ fontWeight: 600, marginBottom: 12 }}>
               Прогресс по предметам
@@ -233,7 +251,6 @@ export default function StudentHome() {
             )}
           </div>
 
-          {/* Последние оценки */}
           <div className="card pad-0">
             <div
               className="row between"
@@ -243,10 +260,7 @@ export default function StudentHome() {
               }}
             >
               <div style={{ fontWeight: 600 }}>Последние оценки</div>
-              <span
-                className="link small"
-                onClick={() => navigate('/grades')}
-              >
+              <span className="link small" onClick={() => navigate('/grades')}>
                 Все →
               </span>
             </div>
@@ -271,7 +285,8 @@ export default function StudentHome() {
                       {h.title}
                     </div>
                     <div className="small muted">
-                      {h.subject} · {fmtDate(h.gradedAt || h.deadline)}
+                      {h.subject} ·{' '}
+                      {h.gradedAt ? fmtDate(h.gradedAt) : '—'}
                     </div>
                   </div>
                 </div>
@@ -280,6 +295,15 @@ export default function StudentHome() {
           </div>
         </div>
       </div>
+
+      {statusCounts.length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <div style={{ fontWeight: 600, marginBottom: 12 }}>
+            Статусы заданий
+          </div>
+          <DonutChart data={statusCounts} size={130} />
+        </div>
+      )}
     </>
   );
 }

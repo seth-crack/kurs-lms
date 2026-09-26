@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useAuth } from '../../store/useAuth';
+import { useUsers } from '../../store/useUsers';
 import { useHomework } from '../../store/useHomework';
-import { studentById } from '../../data/mock';
 import { fmtDate } from '../../lib/time';
 
 import Avatar from '../../ui/Avatar';
@@ -11,10 +11,10 @@ import Tabs from '../../ui/Tabs';
 
 export default function TeacherGrades() {
   const user = useAuth((s) => s.user);
+  const users = useUsers((s) => s.users);
   const items = useHomework((s) => s.items);
   const [tab, setTab] = useState('all');
 
-  // Все проверенные работы этого учителя
   const graded = useMemo(
     () =>
       items
@@ -23,18 +23,15 @@ export default function TeacherGrades() {
     [items, user.id]
   );
 
-  // Статистика
-  const avg =
-    graded.length
-      ? (graded.reduce((s, h) => s + h.grade, 0) / graded.length).toFixed(1)
-      : '—';
+  const avg = graded.length
+    ? (graded.reduce((s, h) => s + h.grade, 0) / graded.length).toFixed(1)
+    : '—';
 
   const grades5 = graded.filter((h) => h.grade === 5).length;
   const grades4 = graded.filter((h) => h.grade === 4).length;
   const grades3 = graded.filter((h) => h.grade === 3).length;
   const grades2 = graded.filter((h) => h.grade === 2).length;
 
-  // Фильтр по предметам
   const subjects = [...new Set(graded.map((h) => h.subject))];
 
   const filtered = useMemo(() => {
@@ -47,13 +44,10 @@ export default function TeacherGrades() {
       <div className="page-head">
         <div>
           <div className="page-title">Оценки</div>
-          <div className="page-sub">
-            Журнал всех выставленных оценок
-          </div>
+          <div className="page-sub">Журнал выставленных оценок</div>
         </div>
       </div>
 
-      {/* ----- Статистика ----- */}
       <div className="grid cols-4" style={{ marginBottom: 16 }}>
         <div className="card stat">
           <div className="s-label">
@@ -69,7 +63,7 @@ export default function TeacherGrades() {
           <div className="s-value" style={{ color: 'var(--success)' }}>
             {grades5}
           </div>
-          <div className="s-sub">отличных работ</div>
+          <div className="s-sub">отличных</div>
         </div>
         <div className="card stat">
           <div className="s-label">
@@ -78,7 +72,7 @@ export default function TeacherGrades() {
           <div className="s-value" style={{ color: 'var(--info)' }}>
             {grades4}
           </div>
-          <div className="s-sub">хороших работ</div>
+          <div className="s-sub">хороших</div>
         </div>
         <div className="card stat">
           <div className="s-label">
@@ -91,20 +85,20 @@ export default function TeacherGrades() {
         </div>
       </div>
 
-      {/* ----- Табы по предметам ----- */}
-      <Tabs
-        value={tab}
-        onChange={setTab}
-        tabs={[
-          { value: 'all', label: `Все (${graded.length})` },
-          ...subjects.map((s) => ({
-            value: s,
-            label: `${s} (${graded.filter((h) => h.subject === s).length})`,
-          })),
-        ]}
-      />
+      {subjects.length > 0 && (
+        <Tabs
+          value={tab}
+          onChange={setTab}
+          tabs={[
+            { value: 'all', label: `Все (${graded.length})` },
+            ...subjects.map((s) => ({
+              value: s,
+              label: `${s} (${graded.filter((h) => h.subject === s).length})`,
+            })),
+          ]}
+        />
+      )}
 
-      {/* ----- Таблица ----- */}
       {filtered.length === 0 ? (
         <div className="card pad-0">
           <Empty
@@ -129,23 +123,25 @@ export default function TeacherGrades() {
               </thead>
               <tbody>
                 {filtered.map((h) => {
-                  const s = studentById(h.studentIds[0]);
+                  const s = users.find((u) => u.id === h.student_ids?.[0]);
                   if (!s) return null;
                   return (
                     <tr key={h.id}>
                       <td>
                         <div className="row" style={{ gap: 10 }}>
                           <Avatar
-                            short={s.short}
+                            short={s.name
+                              .split(' ')
+                              .map((x) => x[0])
+                              .slice(0, 2)
+                              .join('')
+                              .toUpperCase()}
                             color={s.color}
                             size="s"
                           />
-                          <div>
-                            <div style={{ fontWeight: 600, fontSize: 13 }}>
-                              {s.name}
-                            </div>
-                            <div className="small muted">{s.group}</div>
-                          </div>
+                          <span style={{ fontWeight: 600, fontSize: 13 }}>
+                            {s.name}
+                          </span>
                         </div>
                       </td>
                       <td>{h.title}</td>
